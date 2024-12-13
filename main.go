@@ -78,6 +78,6 @@ func main() {
     }
 
     http.HandleFunc("/add_ip", handler)
-    fmt.Println("Server started at :8080")
-    http.ListenAndServe(":8080", nil)
+    fmt.Println("Server started at :8062")
+    http.ListenAndServe(":8062", nil)
 }
