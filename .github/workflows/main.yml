@@ -34,6 +34,17 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Create Git tag
+      id: tag
+      run: |
+        TAG_NAME=v1.0.${{ github.run_number }}
+        git tag $TAG_NAME
+        git push origin $TAG_NAME
+        echo "::set-output name=TAG_NAME::$TAG_NAME"
+
     - name: Download artifact
       uses: actions/download-artifact@v3
       with:
@@ -42,6 +53,9 @@ jobs:
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
+        tag_name: ${{ steps.tag.outputs.TAG_NAME }}
+        name: Release ${{ steps.tag.outputs.TAG_NAME }}
+        body: "A new release"
         files: whitelist.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
