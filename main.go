@@ -1,84 +1,115 @@
 package main
 
 import (
-    "encoding/json"
-    "fmt"
-    "io/ioutil"
-    "net"
-    "net/http"
-    "os"
-    "os/exec"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os/exec"
+	"sync"
+	"time"
+
+	"github.com/gorilla/mux"
 )
 
-type Config struct {
-    Password string `json:"password"`
-    RdpPort  int    `json:"rdp_port"`
+type WhitelistManager struct {
+	mu        sync.Mutex
+	whitelist map[string]time.Time
+	password  string
 }
 
-var config Config
-
-func loadConfig() error {
-    file, err := os.Open("config.json")
-    if err != nil {
-        return err
-    }
-    defer file.Close()
-
-    decoder := json.NewDecoder(file)
-    err = decoder.Decode(&config)
-    if err != nil {
-        return err
-    }
-
-    return nil
+func NewWhitelistManager(password string) *WhitelistManager {
+	wm := &WhitelistManager{
+		whitelist: make(map[string]time.Time),
+		password:  password,
+	}
+	
+	// 定期清理过期IP
+	go wm.cleanupExpiredIPs()
+	
+	return wm
 }
 
-func addIPToWhitelist(ip string) error {
-    cmd := exec.Command("netsh", "advfirewall", "firewall", "add", "rule", "name=Allow RDP from "+ip, "dir=in", "action=allow", "protocol=TCP", "localport="+fmt.Sprint(config.RdpPort), "remoteip="+ip)
-    return cmd.Run()
+func (wm *WhitelistManager) cleanupExpiredIPs() {
+	for {
+		time.Sleep(5 * time.Minute)
+		wm.mu.Lock()
+		for ip, addTime := range wm.whitelist {
+			if time.Since(addTime) > 5*time.Hour {
+				wm.removeIPFromFirewall(ip)
+				delete(wm.whitelist, ip)
+			}
+		}
+		wm.mu.Unlock()
+	}
 }
 
-func removeIPFromWhitelist(ip string) error {
-    cmd := exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", "name=Allow RDP from "+ip)
-    return cmd.Run()
+func (wm *WhitelistManager) addIPToFirewall(ip string) error {
+	cmd := exec.Command("powershell", "-Command", 
+		fmt.Sprintf("New-NetFirewallRule -Name 'RDP_Dynamic_Whitelist_%s' -DisplayName 'Dynamic RDP Access' -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow -RemoteAddress %s", ip, ip))
+	return cmd.Run()
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
-    clientIP := r.RemoteAddr
-    if ip, _, err := net.SplitHostPort(clientIP); err == nil {
-        clientIP = ip
-    }
+func (wm *WhitelistManager) removeIPFromFirewall(ip string) error {
+	cmd := exec.Command("powershell", "-Command", 
+		fmt.Sprintf("Remove-NetFirewallRule -Name 'RDP_Dynamic_Whitelist_%s'", ip))
+	return cmd.Run()
+}
 
-    userPassword := r.URL.Query().Get("password")
-    if userPassword != config.Password {
-        http.Error(w, "Unauthorized", http.StatusUnauthorized)
-        return
-    }
+func (wm *WhitelistManager) AuthorizeRDP(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Password string `json:"password"`
+		IP       string `json:"ip"`
+	}
 
-    err := addIPToWhitelist(clientIP)
-    if err != nil {
-        http.Error(w, "Failed to add IP to whitelist", http.StatusInternalServerError)
-        return
-    }
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
 
-    fmt.Fprintf(w, "IP %s has been added to the whitelist", clientIP)
+	// 验证密码
+	if request.Password != wm.password {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
-    // 设置定时任务在5小时后删除IP
-    go func(ip string) {
-        time.Sleep(5 * time.Hour)
-        removeIPFromWhitelist(ip)
-    }(clientIP)
+	// 验证IP地址
+	if net.ParseIP(request.IP) == nil {
+		http.Error(w, "Invalid IP address", http.StatusBadRequest)
+		return
+	}
+
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	// 添加到防火墙
+	if err := wm.addIPToFirewall(request.IP); err != nil {
+		http.Error(w, "Failed to add IP to firewall", http.StatusInternalServerError)
+		return
+	}
+
+	// 记录白名单
+	wm.whitelist[request.IP] = time.Now()
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "success",
+		"message": fmt.Sprintf("IP %s authorized for 5 hours", request.IP),
+	})
 }
 
 func main() {
-    err := loadConfig()
-    if err != nil {
-        fmt.Println("Error loading config:", err)
-        return
-    }
+	// 设置管理密码
+	password := "your_secure_password_here"
+	
+	wm := NewWhitelistManager(password)
 
-    http.HandleFunc("/add_ip", handler)
-    fmt.Println("Server started at :8062")
-    http.ListenAndServe(":8062", nil)
+	r := mux.NewRouter()
+	r.HandleFunc("/authorize", wm.AuthorizeRDP).Methods("POST")
+
+	// 启动Web服务
+	port := 8062
+	log.Printf("服务启动，监听端口 %d", port)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", port), r))
 }
-
