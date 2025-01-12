@@ -1,0 +1,58 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main  # 或者你使用的默认分支名
+
+jobs:
+  build:
+    runs-on: windows-latest  # 选择运行环境，因为是Windows程序
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v2
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
+        with:
+          go-version: '1.15'  # 指定Go版本
+
+      - name: Build executable
+        run: |
+          go build -o myapp.exe .
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: myapp
+          path: myapp.exe
+
+  release:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v2
+        with:
+          name: myapp
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.sha }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./myapp/myapp.exe
+          asset_name: myapp.exe
+          asset_content_type: application/octet-stream
