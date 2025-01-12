@@ -1,54 +1,43 @@
 package main
 
 import (
-    "fmt"
-    "net"
-    "net/http"
-    "os/exec"
-    "time"
+	"net/http"
+	"os/exec"
+	"time"
 )
 
-const password = "yourpassword" // 设置你的密码
-
-func addIPToWhitelist(ip string) error {
-    cmd := exec.Command("netsh", "advfirewall", "firewall", "add", "rule", "name=Allow RDP from "+ip, "dir=in", "action=allow", "protocol=TCP", "localport=3389", "remoteip="+ip)
-    return cmd.Run()
-}
-
-func removeIPFromWhitelist(ip string) error {
-    cmd := exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", "name=Allow RDP from "+ip)
-    return cmd.Run()
-}
-
-func handler(w http.ResponseWriter, r *http.Request) {
-    clientIP := r.RemoteAddr
-    if ip, _, err := net.SplitHostPort(clientIP); err == nil {
-        clientIP = ip
-    }
-
-    userPassword := r.URL.Query().Get("password")
-    if userPassword != password {
-        http.Error(w, "Unauthorized", http.StatusUnauthorized)
-        return
-    }
-
-    err := addIPToWhitelist(clientIP)
-    if err != nil {
-        http.Error(w, "Failed to add IP to whitelist", http.StatusInternalServerError)
-        return
-    }
-
-    fmt.Fprintf(w, "IP %s has been added to the whitelist", clientIP)
-
-    // 设置定时任务在5小时后删除IP
-    go func(ip string) {
-        time.Sleep(5 * time.Hour)
-        removeIPFromWhitelist(ip)
-    }(clientIP)
-}
+const (
+	password = "yourSecurePassword" // 设置密码
+)
 
 func main() {
-    http.HandleFunc("/add_ip", handler)
-    fmt.Println("Server started at :8062")
-    http.ListenAndServe(":8062", nil)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			r.ParseForm()
+			clientPassword := r.FormValue("password")
+			clientIP := r.RemoteAddr
+
+			if clientPassword == password {
+				// 添加防火墙规则
+				cmd := exec.Command("netsh", "advfirewall", "firewall", "add", "rule", "name=\"Allow RDP\"", "dir=in", "action=allow", "protocol=TCP", "localport=3389", "remoteip="+clientIP)
+				if err := cmd.Run(); err != nil {
+					http.Error(w, "Failed to update firewall rules", http.StatusInternalServerError)
+					return
+				}
+
+				// 设置定时器，5小时后删除规则
+				time.AfterFunc(5*time.Hour, func() {
+					exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", "name=\"Allow RDP\"", "remoteip="+clientIP).Run()
+				})
+
+				w.Write([]byte("IP added to whitelist successfully"))
+			} else {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			}
+		} else {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+
+	http.ListenAndServe(":8080", nil)
 }
