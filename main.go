@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os/exec"
 	"time"
+	"html/template"
 )
 
 const (
@@ -14,25 +15,24 @@ func main() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "GET":
-			// 提供一个HTML表单
-			htmlForm := `
+			tmpl := template.Must(template.New("form").Parse(`
 				
 ```html
 <!DOCTYPE html>
 				<html>
 				<head>
-					<title>Enter Password to Whitelist IP</title>
+					<title>Login</title>
 				</head>
 				<body>
 					<form action="/" method="post">
 						<label for="password">Password:</label>
-						<input type="password" id="password" name="password"><br><br>
+						<input type="password" id="password" name="password">
 						<input type="submit" value="Submit">
 					</form>
 				</body>
 				</html>
-		`
-		w.Write([]byte(htmlForm))
+		`))
+		tmpl.Execute(w, nil)
 	case "POST":
 		r.ParseForm()
 		clientPassword := r.FormValue("password")
@@ -61,3 +61,4 @@ func main() {
 })
 
 http.ListenAndServe(":8080", nil)
+}
