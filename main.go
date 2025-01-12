@@ -1,64 +1,106 @@
 package main
 
 import (
-	"net/http"
+	"embed"
+	"log"
+	"net"
 	"os/exec"
 	"time"
-	"html/template"
+
+	"github.com/gin-gonic/gin"
 )
+
+//go:embed templates/index.html
+var templateFS embed.FS
 
 const (
-	password = "yourSecurePassword" // 设置密码
+	PASSWORD = "123321"
+	WHITELIST_DURATION = 5 * time.Hour
 )
 
-func main() {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case "GET":
-			tmpl := template.Must(template.New("form").Parse(`
-				
-```html
-<!DOCTYPE html>
-				<html>
-				<head>
-					<title>Login</title>
-				</head>
-				<body>
-					<form action="/" method="post">
-						<label for="password">Password:</label>
-						<input type="password" id="password" name="password">
-						<input type="submit" value="Submit">
-					</form>
-				</body>
-				</html>
-		`))
-		tmpl.Execute(w, nil)
-	case "POST":
-		r.ParseForm()
-		clientPassword := r.FormValue("password")
-		clientIP := r.RemoteAddr
+type WhitelistManager struct {
+	whitelist map[string]time.Time
+}
 
-		if clientPassword == password {
-			// 添加防火墙规则
-			cmd := exec.Command("netsh", "advfirewall", "firewall", "add", "rule", "name=\"Allow RDP\"", "dir=in", "action=allow", "protocol=TCP", "localport=3389", "remoteip="+clientIP)
-			if err := cmd.Run(); err != nil {
-				http.Error(w, "Failed to update firewall rules", http.StatusInternalServerError)
-				return
-			}
-
-			// 设置定时器，5小时后删除规则
-			time.AfterFunc(5*time.Hour, func() {
-				exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", "name=\"Allow RDP\"", "remoteip="+clientIP).Run()
-			})
-
-			w.Write([]byte("IP added to whitelist successfully"))
-		} else {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		}
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
+func NewWhitelistManager() *WhitelistManager {
+	return &WhitelistManager{
+		whitelist: make(map[string]time.Time),
 	}
-})
+}
 
-http.ListenAndServe(":8080", nil)
+func (wm *WhitelistManager) AddToRDPWhitelist(ip string) error {
+	cmd := exec.Command("netsh", "advfirewall", "firewall", "add", "rule", 
+		"name=RDP_Whitelist", 
+		"dir=in", 
+		"action=allow", 
+		"protocol=TCP", 
+		"localport=3389", 
+		"remoteip=" + ip)
+	
+	err := cmd.Run()
+	if err != nil {
+		return err
+	}
+
+	wm.whitelist[ip] = time.Now().Add(WHITELIST_DURATION)
+	return nil
+}
+
+func (wm *WhitelistManager) CleanupExpiredIPs() {
+	for {
+		time.Sleep(15 * time.Minute)
+		now := time.Now()
+		
+		for ip, expireTime := range wm.whitelist {
+			if now.After(expireTime) {
+				exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", 
+					"name=RDP_Whitelist", 
+					"remoteip=" + ip).Run()
+				
+				delete(wm.whitelist, ip)
+			}
+		}
+	}
+}
+
+func main() {
+	whitelistManager := NewWhitelistManager()
+	
+	go whitelistManager.CleanupExpiredIPs()
+
+	r := gin.Default()
+
+	// 使用嵌入的模板文件
+	templ := template.Must(template.ParseFS(templateFS, "templates/index.html"))
+	r.SetHTMLTemplate(templ)
+
+	r.GET("/", func(c *gin.Context) {
+		c.HTML(200, "index.html", nil)
+	})
+
+	r.POST("/whitelist", func(c *gin.Context) {
+		password := c.PostForm("password")
+		
+		if password != PASSWORD {
+			c.JSON(403, gin.H{"error": "密码错误"})
+			return
+		}
+
+		clientIP := c.ClientIP()
+		err := whitelistManager.AddToRDPWhitelist(clientIP)
+		
+		if err != nil {
+			c.JSON(500, gin.H{"error": "添加白名单失败"})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"message": "IP已成功添加到RDP白名单",
+			"ip": clientIP,
+			"expires": time.Now().Add(WHITELIST_DURATION),
+		})
+	})
+
+	log.Println("服务器启动，访问 http://localhost:8080")
+	r.Run(":8080")
 }
