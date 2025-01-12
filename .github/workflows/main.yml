@@ -1,61 +1,69 @@
-name: Go Build and Release
+name: Build RDP Whitelist Tool
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
-    branches:
-      - main
+    branches: [ main ]
+  release:
+    types: [created]
 
 jobs:
   build:
+    name: Build Binaries
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 定义目标操作系统和架构
+        goos: [windows, linux, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          # 排除不常用的组合
+          - goos: darwin
+            goarch: arm64
 
     steps:
-    - name: Checkout code
+    - name: Checkout Code
       uses: actions/checkout@v3
 
-    - name: Set up Go
+    - name: Setup Go
       uses: actions/setup-go@v4
       with:
         go-version: '1.21'
 
-    - name: Build for Windows
-      run: GOOS=windows GOARCH=amd64 go build -o whitelist.exe
+    - name: Build Binary
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+      run: |
+        # 设置输出文件名
+        OUTPUT_NAME="rdp_whitelist_${{ matrix.goos }}_${{ matrix.goarch }}"
+        if [ "${{ matrix.goos }}" == "windows" ]; then
+          OUTPUT_NAME="${OUTPUT_NAME}.exe"
+        fi
+        
+        # 编译
+        go mod tidy
+        go build -ldflags="-s -w" -o dist/$OUTPUT_NAME
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3
       with:
-        name: whitelist.exe
-        path: whitelist.exe
+        name: rdp-whitelist-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: dist/
+        retention-days: 5
 
   release:
     needs: build
     runs-on: ubuntu-latest
+    if: github.event_name == 'release'
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-
-    - name: Create Git tag
-      id: tag
-      run: |
-        TAG_NAME=v1.0.${{ github.run_number }}
-        git tag $TAG_NAME
-        git push origin $TAG_NAME
-        echo "::set-output name=TAG_NAME::$TAG_NAME"
-
-    - name: Download artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: whitelist.exe
-
-    - name: Create Release
+    - name: Download Artifacts
+      uses: actions/download-artifact@v3
+      
+    - name: Upload Release Assets
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: ${{ steps.tag.outputs.TAG_NAME }}
-        name: Release ${{ steps.tag.outputs.TAG_NAME }}
-        body: "A new release"
-        files: whitelist.exe
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        files: |
+          **/*.exe
+          **/*rdp_whitelist_*
