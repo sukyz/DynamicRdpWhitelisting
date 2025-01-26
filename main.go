@@ -14,8 +14,9 @@ import (
 )
 
 type Config struct {
-	Password string `json:"password"`
-	Port     int    `json:"port"` 
+	Password  string `json:"password"`
+	Port      int    `json:"port"`
+	RDPPort   int    `json:"rdp_port"`
 }
 
 type IPEntry struct {
@@ -43,7 +44,7 @@ func addIPToFirewall(ip string) error {
 		"dir=in",
 		"action=allow",
 		"protocol=TCP",
-		"localport=3389",
+		"localport="+fmt.Sprintf("%d", config.RDPPort),
 		"remoteip="+ip)
 	return cmd.Run()
 }
@@ -147,6 +148,7 @@ func init() {
 		defaultConfig := Config{
 			Password: "your-password-here",
 			Port:     8080,
+			RDPPort:  3389,
 		}
 		configData, _ := json.MarshalIndent(defaultConfig, "", "    ")
 		if err := ioutil.WriteFile("config.json", configData, 0644); err != nil {
